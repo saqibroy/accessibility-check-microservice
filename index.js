@@ -1,7 +1,7 @@
 // accessibility-microservice/index.js
 import express from 'express';
 import axios from 'axios';
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 import axe from 'axe-core';
 import dotenv from 'dotenv';
 import http from 'node:http';
@@ -149,7 +149,7 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 runScripts: "outside-only", // Changed from "dangerously"
                 resources: "usable",
                 pretendToBeVisual: true,
-                virtualConsole: new jsdom.VirtualConsole().sendTo(console, { omitJSDOMErrors: true })
+                virtualConsole: new VirtualConsole().sendTo(console, { omitJSDOMErrors: true })
             });
             
             const { window } = dom;
