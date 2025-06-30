@@ -13,19 +13,17 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Enhanced configuration constants
+// Configuration constants
 const CONFIG = {
-    MAX_HTML_SIZE: 5 * 1024 * 1024, // Reduced to 5MB max HTML size
-    MAX_CONTENT_LENGTH: 20 * 1024 * 1024, // Reduced to 20MB max content length
-    REQUEST_TIMEOUT: 30000, // Reduced to 30 seconds
-    ANALYSIS_TIMEOUT: 45000, // Reduced to 45 seconds for analysis
-    MAX_DOM_ELEMENTS: 5000, // Reduced maximum DOM elements to analyze
-    MEMORY_LIMIT_MB: 300, // Reduced memory limit
-    COMPLEX_SITE_THRESHOLD: 2000, // DOM elements threshold for complex sites
-    JSDOM_TIMEOUT: 30000, // Specific timeout for JSDOM operations
+    MAX_HTML_SIZE: 10 * 1024 * 1024, // 10MB max HTML size
+    MAX_CONTENT_LENGTH: 50 * 1024 * 1024, // 50MB max content length
+    REQUEST_TIMEOUT: 45000, // 45 seconds
+    ANALYSIS_TIMEOUT: 60000, // 60 seconds for analysis
+    MAX_DOM_ELEMENTS: 10000, // Maximum DOM elements to analyze
+    MEMORY_LIMIT_MB: 512, // Memory limit in MB
 };
 
-// Memory monitoring with forced cleanup
+// Memory monitoring
 let peakMemoryUsage = 0;
 const monitorMemory = () => {
     const usage = process.memoryUsage();
@@ -33,42 +31,41 @@ const monitorMemory = () => {
     peakMemoryUsage = Math.max(peakMemoryUsage, currentMB);
     
     if (currentMB > CONFIG.MEMORY_LIMIT_MB) {
-        console.warn(`⚠️  High memory usage detected: ${currentMB.toFixed(2)}MB - forcing cleanup`);
-        // Force multiple garbage collections
+        console.warn(`⚠️  High memory usage detected: ${currentMB.toFixed(2)}MB`);
+        // Force garbage collection if available
         if (global.gc) {
             global.gc();
-            global.gc(); // Double GC for better cleanup
         }
     }
 };
 
-// Monitor memory every 3 seconds (more frequent)
-setInterval(monitorMemory, 3000);
+// Monitor memory every 5 seconds
+setInterval(monitorMemory, 5000);
 
-// More aggressive HTTP agents
+// Configure HTTP agents with optimized settings
 const httpAgent = new http.Agent({
     keepAlive: false,
     timeout: CONFIG.REQUEST_TIMEOUT,
-    maxSockets: 3, // Reduced
-    maxFreeSockets: 1 // Reduced
+    maxSockets: 5,
+    maxFreeSockets: 2
 });
 
 const httpsAgent = new https.Agent({
     keepAlive: false,
     timeout: CONFIG.REQUEST_TIMEOUT,
-    maxSockets: 3, // Reduced
-    maxFreeSockets: 1, // Reduced
-    rejectUnauthorized: false
+    maxSockets: 5,
+    maxFreeSockets: 2,
+    rejectUnauthorized: false // Handle some SSL issues
 });
 
-// Configure axios with stricter limits
+// Configure axios with strict limits
 axios.defaults.timeout = CONFIG.REQUEST_TIMEOUT;
 axios.defaults.maxContentLength = CONFIG.MAX_CONTENT_LENGTH;
 axios.defaults.maxBodyLength = CONFIG.MAX_CONTENT_LENGTH;
 axios.defaults.httpAgent = httpAgent;
 axios.defaults.httpsAgent = httpsAgent;
 
-app.use(express.json({ limit: '500kb' })); // Further reduced JSON limit
+app.use(express.json({ limit: '1mb' })); // Reduced JSON limit
 
 // Enhanced CORS configuration
 app.use((req, res, next) => {
@@ -76,6 +73,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Max-Age', '3600');
+    // CRITICAL: Ensure JSON content type for all responses
     res.setHeader('Content-Type', 'application/json');
     
     if (req.method === 'OPTIONS') {
@@ -118,6 +116,7 @@ const validateUrl = (req, res, next) => {
 
 // Enhanced error response function
 const sendErrorResponse = (res, status, message, error, details = null, url = null) => {
+    // Ensure we always send JSON
     res.setHeader('Content-Type', 'application/json');
     
     const errorResponse = {
@@ -134,7 +133,7 @@ const sendErrorResponse = (res, status, message, error, details = null, url = nu
     return res.status(status).json(errorResponse);
 };
 
-// More aggressive HTML sanitizer
+// HTML content sanitizer and size checker
 const sanitizeAndValidateHtml = (htmlContent, url) => {
     if (!htmlContent || typeof htmlContent !== 'string') {
         throw new Error('No valid HTML content received');
@@ -146,220 +145,123 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
     console.log(`HTML content size: ${sizeInMB.toFixed(2)}MB`);
 
     if (sizeInBytes > CONFIG.MAX_HTML_SIZE) {
-        console.warn(`⚠️  Large HTML detected (${sizeInMB.toFixed(2)}MB), truncating aggressively...`);
-        // More aggressive truncation
+        console.warn(`⚠️  Large HTML detected (${sizeInMB.toFixed(2)}MB), truncating...`);
+        // Truncate to manageable size while preserving structure
         const truncatedHtml = htmlContent.substring(0, CONFIG.MAX_HTML_SIZE);
-        // Ensure we end with proper closing tags
-        return truncatedHtml + '</main></body></html>';
+        // Try to close any open tags to avoid parsing issues
+        return truncatedHtml + '</body></html>';
     }
 
-    // Remove problematic scripts and heavy content for complex sites
-    let cleanedHtml = htmlContent;
-    if (sizeInMB > 1) { // For sites > 1MB
-        console.log('🧹 Cleaning HTML for complex site...');
-        cleanedHtml = cleanedHtml
-            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove all scripts
-            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove inline styles
-            .replace(/on\w+="[^"]*"/gi, '') // Remove event handlers
-            .replace(/style="[^"]*"/gi, '') // Remove inline styles
-            .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '') // Remove iframes
-            .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '') // Remove objects
-            .replace(/<embed[^>]*>/gi, ''); // Remove embeds
-    }
-
-    return cleanedHtml;
+    return htmlContent;
 };
 
-// Completely rewritten accessibility analysis with better resource management
+// Improved accessibility analysis with better resource management
 const runAccessibilityAnalysis = async (htmlContent, url) => {
     return new Promise((resolve, reject) => {
         let dom = null;
         let analysisTimeout = null;
-        let jsdomTimeout = null;
-        let isCompleted = false;
         
-        const cleanup = () => {
-            if (isCompleted) return;
-            isCompleted = true;
-            
-            if (analysisTimeout) {
-                clearTimeout(analysisTimeout);
-                analysisTimeout = null;
-            }
-            if (jsdomTimeout) {
-                clearTimeout(jsdomTimeout);
-                jsdomTimeout = null;
-            }
-            if (dom && dom.window) {
-                try {
-                    dom.window.close();
-                } catch (closeError) {
-                    console.warn('Error closing JSDOM window:', closeError.message);
-                }
-                dom = null;
-            }
-            // Aggressive garbage collection
-            if (global.gc) {
-                global.gc();
-                setTimeout(() => global.gc(), 100); // Second GC after a delay
-            }
-        };
-
         try {
-            console.log('🔍 Initializing JSDOM with strict security restrictions...');
+            console.log('🔍 Initializing JSDOM with security restrictions...');
             
-            // Create JSDOM with minimal resource usage and timeouts
+            // Create JSDOM with minimal resource usage
             const virtualConsole = new VirtualConsole();
-            virtualConsole.on("error", () => {}); // Suppress all errors
-            virtualConsole.on("warn", () => {}); // Suppress all warnings
-            virtualConsole.on("jsdomError", () => {}); // Suppress JSDOM errors
-            
-            // Set JSDOM creation timeout
-            jsdomTimeout = setTimeout(() => {
-                cleanup();
-                reject(new Error('JSDOM initialization timeout - site too complex'));
-            }, CONFIG.JSDOM_TIMEOUT);
-
-            dom = new JSDOM(htmlContent, {
-                url: url,
-                runScripts: "outside-only", // Safer than dangerously
-                resources: "usable",
-                pretendToBeVisual: false, // Reduce resource usage
-                virtualConsole: virtualConsole,
-                beforeParse(window) {
-                    // Disable problematic APIs
-                    window.alert = () => {};
-                    window.confirm = () => false;
-                    window.prompt = () => null;
-                    window.open = () => null;
-                    // Disable timers to prevent infinite loops
-                    window.setTimeout = () => 0;
-                    window.setInterval = () => 0;
-                    window.requestAnimationFrame = () => 0;
-                }
+            virtualConsole.on("error", () => {
+                // Suppress JSDOM errors to prevent them from breaking the analysis
+            });
+            virtualConsole.on("warn", () => {
+                // Suppress JSDOM warnings
             });
             
-            // Clear JSDOM timeout since creation succeeded
-            if (jsdomTimeout) {
-                clearTimeout(jsdomTimeout);
-                jsdomTimeout = null;
-            }
+            dom = new JSDOM(htmlContent, {
+                url: url,
+                runScripts: "outside-only", // Changed from "dangerously"
+                resources: "usable",
+                pretendToBeVisual: true,
+                virtualConsole: virtualConsole
+            });
             
             const { window } = dom;
             const { document } = window;
 
-            // Count DOM elements and check for complexity
+            // Count DOM elements for complexity assessment
             const elementCount = document.querySelectorAll('*').length;
             console.log(`📊 DOM elements found: ${elementCount}`);
 
             if (elementCount > CONFIG.MAX_DOM_ELEMENTS) {
-                cleanup();
-                reject(new Error(`Website too complex: ${elementCount} DOM elements (max: ${CONFIG.MAX_DOM_ELEMENTS}). Try a simpler page.`));
-                return;
+                console.warn(`⚠️  Large DOM detected (${elementCount} elements), may impact performance`);
             }
-
-            const isComplexSite = elementCount > CONFIG.COMPLEX_SITE_THRESHOLD;
-            const actualTimeout = isComplexSite ? CONFIG.ANALYSIS_TIMEOUT * 0.75 : CONFIG.ANALYSIS_TIMEOUT;
-
-            console.log(`🏗️  Site complexity: ${isComplexSite ? 'HIGH' : 'NORMAL'} (timeout: ${actualTimeout/1000}s)`);
 
             // Set analysis timeout
             analysisTimeout = setTimeout(() => {
                 cleanup();
-                reject(new Error(`Analysis timeout after ${actualTimeout / 1000} seconds - website too complex`));
-            }, actualTimeout);
+                reject(new Error(`Analysis timeout after ${CONFIG.ANALYSIS_TIMEOUT / 1000} seconds`));
+            }, CONFIG.ANALYSIS_TIMEOUT);
 
-            // Optimized axe configuration for complex sites
-            const axeConfig = isComplexSite ? {
-                rules: [
-                    { id: 'bypass', enabled: true },
-                    { id: 'color-contrast', enabled: false }, // Disable expensive rules
-                    { id: 'focus-order-semantics', enabled: false },
-                    { id: 'scrollable-region-focusable', enabled: false },
-                    { id: 'css-orientation-lock', enabled: false }
-                ]
-            } : {
-                rules: [
-                    { id: 'bypass', enabled: true },
-                    { id: 'color-contrast', enabled: true },
-                    { id: 'focus-order-semantics', enabled: false }
-                ]
-            };
-
-            const axeOptions = {
-                runOnly: {
-                    type: 'tag',  
-                    values: isComplexSite ? ['wcag2a'] : ['wcag2a', 'wcag2aa'] // Reduced scope for complex sites
-                },
-                resultTypes: ['violations', 'incomplete'],
-                elementRef: false,
-                selectors: false,
-                ancestry: false,
-                xpath: false,
-                performanceTimer: true // Enable performance monitoring
-            };
-
-            // More efficient axe execution
+            // More efficient axe execution with better error handling
             const axeSource = `
                 try {
                     ${axe.source};
                     
-                    // Configure axe with performance optimizations
-                    axe.configure(${JSON.stringify(axeConfig)});
+                    // Configure axe for better performance on large sites
+                    axe.configure({
+                        rules: [{
+                            id: 'bypass',
+                            enabled: true
+                        }, {
+                            id: 'color-contrast',
+                            enabled: true
+                        }, {
+                            id: 'focus-order-semantics',
+                            enabled: false // Disable expensive rules for large sites
+                        }]
+                    });
 
-                    const startTime = Date.now();
-                    
-                    axe.run(document, ${JSON.stringify(axeOptions)}).then(function(results) {
+                    axe.run(document, {
+                        runOnly: {
+                            type: 'tag',  
+                            values: ['wcag2a', 'wcag2aa']
+                        },
+                        resultTypes: ['violations', 'incomplete'],
+                        elementRef: false,
+                        selectors: false, // Reduce memory usage
+                        ancestry: false,  // Reduce memory usage
+                        xpath: false      // Reduce memory usage
+                    }).then(function(results) {
                         try {
-                            const analysisTime = Date.now() - startTime;
-                            console.log('⏱️  Axe analysis took: ' + analysisTime + 'ms');
-                            
-                            // Aggressive result limiting for complex sites
-                            const maxViolations = ${isComplexSite ? 25 : 50};
-                            const maxIncomplete = ${isComplexSite ? 10 : 25};
-                            
+                            // Limit results to prevent memory issues
                             const limitedResults = {
-                                violations: (results.violations || []).slice(0, maxViolations),
-                                incomplete: (results.incomplete || []).slice(0, maxIncomplete),
-                                passes: (results.passes || []).length,
+                                violations: (results.violations || []).slice(0, 100), // Limit to 100 violations
+                                incomplete: (results.incomplete || []).slice(0, 50),  // Limit to 50 incomplete
+                                passes: (results.passes || []).length, // Just count
                                 url: results.url,
-                                timestamp: results.timestamp,
-                                analysisTimeMs: analysisTime
+                                timestamp: results.timestamp
                             };
                             
-                            // Clean up nodes data aggressively
+                            // Clean up nodes data to reduce memory
                             limitedResults.violations.forEach(violation => {
                                 if (violation.nodes) {
-                                    violation.nodes = violation.nodes.slice(0, 5).map(node => ({
-                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
-                                        failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
-                                    }));
-                                }
-                            });
-
-                            limitedResults.incomplete.forEach(incomplete => {
-                                if (incomplete.nodes) {
-                                    incomplete.nodes = incomplete.nodes.slice(0, 3).map(node => ({
-                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
+                                    violation.nodes = violation.nodes.slice(0, 10).map(node => ({
+                                        html: node.html ? node.html.substring(0, 200) : '',
+                                        target: Array.isArray(node.target) ? node.target.slice(0, 3) : node.target,
+                                        failureSummary: node.failureSummary ? node.failureSummary.substring(0, 300) : ''
                                     }));
                                 }
                             });
 
                             window.axeResults = limitedResults;
                         } catch (processingError) {
-                            window.axeError = 'Failed to process results: ' + processingError.message;
+                            window.axeError = 'Failed to process axe results: ' + processingError.message;
                         }
                     }).catch(function(axeRunError) {
-                        window.axeError = 'Analysis failed: ' + axeRunError.message;
+                        window.axeError = 'Axe analysis failed: ' + axeRunError.message;
                     });
                 } catch (setupError) {
-                    window.axeError = 'Setup failed: ' + setupError.message;
+                    window.axeError = 'Axe setup failed: ' + setupError.message;
                 }
             `;
 
-            // Execute axe analysis with error handling
+            // Execute axe analysis
             try {
                 window.eval(axeSource);
             } catch (evalError) {
@@ -368,14 +270,12 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 return;
             }
 
-            // Optimized polling with faster intervals for complex sites
+            // Use more efficient polling with exponential backoff
             let pollAttempts = 0;
-            const maxPollAttempts = isComplexSite ? 300 : 600; // Fewer attempts for complex sites
-            const pollInterval = isComplexSite ? 200 : 100; // Slower polling for complex sites
+            const maxPollAttempts = 600; // 60 seconds max with smaller intervals
+            const initialPollInterval = 100; // Start with 100ms
 
             const checkResults = () => {
-                if (isCompleted) return;
-                
                 pollAttempts++;
                 
                 if (window.axeResults) {
@@ -392,24 +292,52 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 
                 if (pollAttempts >= maxPollAttempts) {
                     cleanup();
-                    reject(new Error('Analysis polling timeout - website too complex for analysis'));
+                    reject(new Error('Analysis polling timeout - website may be too complex'));
                     return;
                 }
                 
-                setTimeout(checkResults, pollInterval);
+                // Exponential backoff for polling
+                const nextInterval = Math.min(initialPollInterval * Math.pow(1.05, pollAttempts), 1000);
+                setTimeout(checkResults, nextInterval);
+            };
+
+            const cleanup = () => {
+                if (analysisTimeout) {
+                    clearTimeout(analysisTimeout);
+                    analysisTimeout = null;
+                }
+                if (dom && dom.window) {
+                    try {
+                        dom.window.close();
+                    } catch (closeError) {
+                        console.warn('Error closing JSDOM window:', closeError.message);
+                    }
+                    dom = null;
+                }
+                // Force garbage collection
+                if (global.gc) {
+                    global.gc();
+                }
             };
 
             // Start polling
-            setTimeout(checkResults, pollInterval);
+            setTimeout(checkResults, initialPollInterval);
 
         } catch (error) {
-            cleanup();
-            reject(new Error('JSDOM initialization failed: ' + error.message));
+            if (analysisTimeout) clearTimeout(analysisTimeout);
+            if (dom && dom.window) {
+                try {
+                    dom.window.close();
+                } catch (closeError) {
+                    console.warn('Error closing JSDOM window during error cleanup:', closeError.message);
+                }
+            }
+            reject(error);
         }
     });
 };
 
-// Enhanced error handling middleware
+// Enhanced error handling middleware that ensures JSON responses
 const handleError = (error, req, res, next) => {
     console.error('❌ Unhandled Error:', error);
     
@@ -434,25 +362,20 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
     console.log(`\n🚀 [${new Date().toISOString()}] Starting accessibility check for: ${url}`);
     console.log(`💾 Initial memory usage: ${initialMemory.toFixed(2)}MB`);
 
-    // Force garbage collection before starting
-    if (global.gc) {
-        global.gc();
-    }
-
     let htmlContent;
     try {
         console.log('🌐 Fetching HTML content...');
         
         const response = await axios.get(url, {
             timeout: CONFIG.REQUEST_TIMEOUT,
-            maxRedirects: 2, // Further reduced redirects
+            maxRedirects: 3, // Reduce redirects
             headers: {
                 'User-Agent': 'Mozilla/5.0 (compatible; AccessibilityBot/1.0)',
-                'Accept': 'text/html,application/xhtml+xml',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
+                'Accept-Encoding': 'gzip, deflate, br',
                 'Cache-Control': 'no-cache',
-                'Connection': 'close'
+                'Connection': 'close' // Prevent connection reuse
             },
             validateStatus: (status) => status >= 200 && status < 400,
             responseType: 'text'
@@ -528,9 +451,7 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
             error: 'ANALYSIS_ERROR',
             details: error.message,
             url: url,
-            suggestion: error.message.includes('too complex') 
-                ? 'This website is too complex for analysis. Try analyzing a specific page instead of the homepage.'
-                : 'Analysis failed due to website complexity or timeout. Please try again or contact support.'
+            suggestion: 'This website may be too complex for analysis. Try a simpler page or contact support.'
         });
     }
 
@@ -540,11 +461,6 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
 
     console.log(`✅ [${new Date().toISOString()}] Accessibility check completed in ${processingTime}ms`);
     console.log(`💾 Final memory usage: ${finalMemory.toFixed(2)}MB (Peak: ${peakMemoryUsage.toFixed(2)}MB)`);
-
-    // Force cleanup after completion
-    if (global.gc) {
-        global.gc();
-    }
 
     // Return structured response with performance metrics
     return res.status(200).json({
@@ -556,38 +472,28 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
             performance: {
                 memoryUsedMB: finalMemory.toFixed(2),
                 peakMemoryMB: peakMemoryUsage.toFixed(2),
-                htmlSizeKB: Math.round(htmlContent.length / 1024),
-                analysisTimeMs: axeResults.analysisTimeMs || 0
+                htmlSizeKB: Math.round(htmlContent.length / 1024)
             },
             summary: {
                 totalViolations: axeResults.violations.length,
                 totalIncomplete: axeResults.incomplete.length,
                 totalPasses: axeResults.passes,
-                isComplexWebsite: htmlContent.length > 1024 * 1024,
-                resultsTruncated: axeResults.violations.length >= 25
+                isLargeWebsite: htmlContent.length > 1024 * 1024 // > 1MB
             },
             violations: axeResults.violations,
             incomplete: axeResults.incomplete,
             metadata: {
-                analysisLimited: axeResults.violations.length >= 50,
-                truncatedHtml: htmlContent.length >= CONFIG.MAX_HTML_SIZE,
-                complexSiteOptimizations: htmlContent.length > 1024 * 1024
+                analysisLimited: axeResults.violations.length >= 100,
+                truncatedHtml: htmlContent.length >= CONFIG.MAX_HTML_SIZE
             }
         }
     });
 });
 
-// Health check endpoint with enhanced memory info
+// Health check endpoint with memory info
 app.get('/health', (req, res) => {
     const memUsage = process.memoryUsage();
     const uptime = process.uptime();
-    
-    // Force garbage collection for health check
-    if (global.gc) {
-        global.gc();
-    }
-    
-    const memAfterGC = process.memoryUsage();
     
     res.status(200).json({
         success: true,
@@ -599,13 +505,7 @@ app.get('/health', (req, res) => {
         memory: {
             heapUsedMB: (memUsage.heapUsed / 1024 / 1024).toFixed(2),
             heapTotalMB: (memUsage.heapTotal / 1024 / 1024).toFixed(2),
-            peakUsageMB: peakMemoryUsage.toFixed(2),
-            afterGcMB: (memAfterGC.heapUsed / 1024 / 1024).toFixed(2)
-        },
-        config: {
-            maxHtmlSizeMB: CONFIG.MAX_HTML_SIZE / 1024 / 1024,
-            maxDomElements: CONFIG.MAX_DOM_ELEMENTS,
-            analysisTimeoutSec: CONFIG.ANALYSIS_TIMEOUT / 1000
+            peakUsageMB: peakMemoryUsage.toFixed(2)
         }
     });
 });
@@ -659,7 +559,7 @@ app.use((req, res) => {
 // Global error handler
 app.use(handleError);
 
-// Enhanced graceful shutdown with memory cleanup
+// Graceful shutdown with cleanup
 const gracefulShutdown = () => {
     console.log('🛑 SIGTERM received, shutting down gracefully');
     server.close(() => {
@@ -669,21 +569,15 @@ const gracefulShutdown = () => {
         httpAgent.destroy();
         httpsAgent.destroy();
         
-        // Force final garbage collection
-        if (global.gc) {
-            global.gc();
-            global.gc();
-        }
-        
         console.log('✅ Process terminated');
         process.exit(0);
     });
     
-    // Force shutdown after 20 seconds (reduced)
+    // Force shutdown after 30 seconds
     setTimeout(() => {
         console.log('❌ Forced shutdown');
         process.exit(1);
-    }, 20000);
+    }, 30000);
 };
 
 process.on('SIGTERM', gracefulShutdown);
@@ -703,8 +597,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const server = app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 [${new Date().toISOString()}] Accessibility Microservice listening on port ${port}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`⚙️  Configuration: Max HTML ${CONFIG.MAX_HTML_SIZE / 1024 / 1024}MB, Max DOM ${CONFIG.MAX_DOM_ELEMENTS}, Timeout ${CONFIG.ANALYSIS_TIMEOUT / 1000}s`);
+    console.log(`⚙️  Configuration: Max HTML ${CONFIG.MAX_HTML_SIZE / 1024 / 1024}MB, Timeout ${CONFIG.REQUEST_TIMEOUT / 1000}s`);
 });
 
-// Increase server timeout
-server.timeout = CONFIG.REQUEST_TIMEOUT + 15000; // Add 15s buffer
+// Increase server timeout for complex websites
+server.timeout = CONFIG.REQUEST_TIMEOUT + 10000; // Add 10s buffer
