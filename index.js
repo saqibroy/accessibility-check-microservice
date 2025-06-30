@@ -73,6 +73,8 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Max-Age', '3600');
+    // CRITICAL: Ensure JSON content type for all responses
+    res.setHeader('Content-Type', 'application/json');
     
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
@@ -112,6 +114,25 @@ const validateUrl = (req, res, next) => {
     }
 };
 
+// Enhanced error response function
+const sendErrorResponse = (res, status, message, error, details = null, url = null) => {
+    // Ensure we always send JSON
+    res.setHeader('Content-Type', 'application/json');
+    
+    const errorResponse = {
+        success: false,
+        message,
+        error,
+        timestamp: new Date().toISOString()
+    };
+    
+    if (details) errorResponse.details = details;
+    if (url) errorResponse.url = url;
+    
+    console.error(`❌ Error Response [${status}]:`, errorResponse);
+    return res.status(status).json(errorResponse);
+};
+
 // HTML content sanitizer and size checker
 const sanitizeAndValidateHtml = (htmlContent, url) => {
     if (!htmlContent || typeof htmlContent !== 'string') {
@@ -144,12 +165,20 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             console.log('🔍 Initializing JSDOM with security restrictions...');
             
             // Create JSDOM with minimal resource usage
+            const virtualConsole = new VirtualConsole();
+            virtualConsole.on("error", () => {
+                // Suppress JSDOM errors to prevent them from breaking the analysis
+            });
+            virtualConsole.on("warn", () => {
+                // Suppress JSDOM warnings
+            });
+            
             dom = new JSDOM(htmlContent, {
                 url: url,
                 runScripts: "outside-only", // Changed from "dangerously"
                 resources: "usable",
                 pretendToBeVisual: true,
-                virtualConsole: new VirtualConsole().sendTo(console, { omitJSDOMErrors: true })
+                virtualConsole: virtualConsole
             });
             
             const { window } = dom;
@@ -169,7 +198,7 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 reject(new Error(`Analysis timeout after ${CONFIG.ANALYSIS_TIMEOUT / 1000} seconds`));
             }, CONFIG.ANALYSIS_TIMEOUT);
 
-            // More efficient axe execution
+            // More efficient axe execution with better error handling
             const axeSource = `
                 try {
                     ${axe.source};
@@ -199,42 +228,52 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                         ancestry: false,  // Reduce memory usage
                         xpath: false      // Reduce memory usage
                     }).then(function(results) {
-                        // Limit results to prevent memory issues
-                        const limitedResults = {
-                            violations: results.violations.slice(0, 100), // Limit to 100 violations
-                            incomplete: results.incomplete.slice(0, 50),  // Limit to 50 incomplete
-                            passes: results.passes.length, // Just count
-                            url: results.url,
-                            timestamp: results.timestamp
-                        };
-                        
-                        // Clean up nodes data to reduce memory
-                        limitedResults.violations.forEach(violation => {
-                            if (violation.nodes) {
-                                violation.nodes = violation.nodes.slice(0, 10).map(node => ({
-                                    html: node.html ? node.html.substring(0, 200) : '',
-                                    target: Array.isArray(node.target) ? node.target.slice(0, 3) : node.target,
-                                    failureSummary: node.failureSummary ? node.failureSummary.substring(0, 300) : ''
-                                }));
-                            }
-                        });
+                        try {
+                            // Limit results to prevent memory issues
+                            const limitedResults = {
+                                violations: (results.violations || []).slice(0, 100), // Limit to 100 violations
+                                incomplete: (results.incomplete || []).slice(0, 50),  // Limit to 50 incomplete
+                                passes: (results.passes || []).length, // Just count
+                                url: results.url,
+                                timestamp: results.timestamp
+                            };
+                            
+                            // Clean up nodes data to reduce memory
+                            limitedResults.violations.forEach(violation => {
+                                if (violation.nodes) {
+                                    violation.nodes = violation.nodes.slice(0, 10).map(node => ({
+                                        html: node.html ? node.html.substring(0, 200) : '',
+                                        target: Array.isArray(node.target) ? node.target.slice(0, 3) : node.target,
+                                        failureSummary: node.failureSummary ? node.failureSummary.substring(0, 300) : ''
+                                    }));
+                                }
+                            });
 
-                        window.axeResults = limitedResults;
-                    }).catch(function(error) {
-                        window.axeError = error.message;
+                            window.axeResults = limitedResults;
+                        } catch (processingError) {
+                            window.axeError = 'Failed to process axe results: ' + processingError.message;
+                        }
+                    }).catch(function(axeRunError) {
+                        window.axeError = 'Axe analysis failed: ' + axeRunError.message;
                     });
-                } catch (error) {
-                    window.axeError = error.message;
+                } catch (setupError) {
+                    window.axeError = 'Axe setup failed: ' + setupError.message;
                 }
             `;
 
             // Execute axe analysis
-            window.eval(axeSource);
+            try {
+                window.eval(axeSource);
+            } catch (evalError) {
+                cleanup();
+                reject(new Error('Failed to execute accessibility analysis: ' + evalError.message));
+                return;
+            }
 
             // Use more efficient polling with exponential backoff
             let pollAttempts = 0;
-            const maxPollAttempts = 300; // 30 seconds max
-            const pollInterval = 100; // Start with 100ms
+            const maxPollAttempts = 600; // 60 seconds max with smaller intervals
+            const initialPollInterval = 100; // Start with 100ms
 
             const checkResults = () => {
                 pollAttempts++;
@@ -253,12 +292,12 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 
                 if (pollAttempts >= maxPollAttempts) {
                     cleanup();
-                    reject(new Error('Analysis polling timeout'));
+                    reject(new Error('Analysis polling timeout - website may be too complex'));
                     return;
                 }
                 
                 // Exponential backoff for polling
-                const nextInterval = Math.min(pollInterval * Math.pow(1.1, pollAttempts), 1000);
+                const nextInterval = Math.min(initialPollInterval * Math.pow(1.05, pollAttempts), 1000);
                 setTimeout(checkResults, nextInterval);
             };
 
@@ -268,7 +307,11 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                     analysisTimeout = null;
                 }
                 if (dom && dom.window) {
-                    dom.window.close();
+                    try {
+                        dom.window.close();
+                    } catch (closeError) {
+                        console.warn('Error closing JSDOM window:', closeError.message);
+                    }
                     dom = null;
                 }
                 // Force garbage collection
@@ -278,29 +321,37 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             };
 
             // Start polling
-            setTimeout(checkResults, pollInterval);
+            setTimeout(checkResults, initialPollInterval);
 
         } catch (error) {
             if (analysisTimeout) clearTimeout(analysisTimeout);
-            if (dom && dom.window) dom.window.close();
+            if (dom && dom.window) {
+                try {
+                    dom.window.close();
+                } catch (closeError) {
+                    console.warn('Error closing JSDOM window during error cleanup:', closeError.message);
+                }
+            }
             reject(error);
         }
     });
 };
 
-// Error handling middleware
+// Enhanced error handling middleware that ensures JSON responses
 const handleError = (error, req, res, next) => {
-    console.error('❌ Error:', error);
+    console.error('❌ Unhandled Error:', error);
     
     if (res.headersSent) {
         return next(error);
     }
 
-    res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : 'SERVER_ERROR'
-    });
+    return sendErrorResponse(
+        res, 
+        500, 
+        'Internal server error', 
+        'SERVER_ERROR',
+        process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred'
+    );
 };
 
 app.post('/check-accessibility-static', validateUrl, async (req, res) => {
@@ -320,7 +371,7 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
             maxRedirects: 3, // Reduce redirects
             headers: {
                 'User-Agent': 'Mozilla/5.0 (compatible; AccessibilityBot/1.0)',
-                'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Cache-Control': 'no-cache',
@@ -343,13 +394,14 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
 
         if (axios.isAxiosError(error)) {
             if (error.response) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Server responded with ${error.response.status}: ${error.response.statusText}`,
-                    error: 'HTTP_ERROR',
-                    statusCode: error.response.status,
-                    url: url
-                });
+                return sendErrorResponse(
+                    res,
+                    400,
+                    `Server responded with ${error.response.status}: ${error.response.statusText}`,
+                    'HTTP_ERROR',
+                    error.response.status,
+                    url
+                );
             }
             
             let networkMessage = 'Network error occurred';
