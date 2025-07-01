@@ -5,7 +5,6 @@ const axe = require('axe-core');
 const dotenv = require('dotenv');
 const http = require('node:http');
 const https = require('node:https');
-// const { promisify } = require('util'); // If you were using it
 
 dotenv.config();
 
@@ -77,7 +76,7 @@ const monitorMemory = () => {
 };
 
 // More frequent memory monitoring for resource-constrained environment
-setInterval(monitorMemory, 2000); // Changed from 3000 to 2000 as per Claude's suggestion
+setInterval(monitorMemory, 2000);
 
 // More aggressive HTTP agents for memory efficiency
 const httpAgent = new http.Agent({
@@ -101,9 +100,9 @@ axios.defaults.maxContentLength = CONFIG.MAX_CONTENT_LENGTH;
 axios.defaults.maxBodyLength = CONFIG.MAX_CONTENT_LENGTH;
 axios.defaults.httpAgent = httpAgent;
 axios.defaults.httpsAgent = httpsAgent;
-axios.defaults.maxRedirects = 1; // Further reduced redirects, applied here
+axios.defaults.maxRedirects = 1;
 
-app.use(express.json({ limit: '500kb' })); // Further reduced JSON limit
+app.use(express.json({ limit: '500kb' }));
 
 // Enhanced CORS configuration
 app.use((req, res, next) => {
@@ -169,8 +168,7 @@ const sendErrorResponse = (res, status, message, error, details = null, url = nu
     return res.status(status).json(errorResponse);
 };
 
-// Enhanced HTML sanitizer for memory efficiency (corrected to use the optimized version once)
-// Enhanced HTML sanitizer for memory efficiency (corrected version)
+// Enhanced HTML sanitizer for memory efficiency
 const sanitizeAndValidateHtml = (htmlContent, url) => {
     if (!htmlContent || typeof htmlContent !== 'string') {
         throw new Error('No valid HTML content received');
@@ -189,7 +187,7 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
         return truncatedHtml + '</main></body></html>';
     }
 
-    // Aggressive cleaning for memory efficiency (fixed regex pattern)
+    // Aggressive cleaning for memory efficiency
     let cleanedHtml = htmlContent;
     console.log('🧹 Cleaning HTML for memory efficiency...');
     cleanedHtml = cleanedHtml
@@ -204,8 +202,8 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
         .replace(/<video[^>]*>[\s\S]*?<\/video>/gi, '') // Remove videos
         .replace(/<audio[^>]*>[\s\S]*?<\/audio>/gi, '') // Remove audio
         .replace(/<canvas[^>]*>[\s\S]*?<\/canvas>/gi, '') // Remove canvas
-        .replace(/<!--[\s\S]*?-->/g, '') // Remove comments (FIXED REGEX)
-        .replace(/<meta[^>]*>/gi, '') // Remove meta tags (keep only essential ones)
+        .replace(/<!--[\s\S]*?-->/g, '') // Remove comments
+        .replace(/<meta[^>]*>/gi, '') // Remove meta tags
         .replace(/<link[^>]*(?!rel=['"]?icon['"]?)[^>]*>/gi, ''); // Remove non-icon links
 
     const finalSize = Buffer.byteLength(cleanedHtml, 'utf8') / (1024 * 1024);
@@ -214,8 +212,7 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
     return cleanedHtml;
 };
 
-
-// Completely rewritten accessibility analysis with better resource management
+// FIXED: Completely rewritten accessibility analysis with proper JSDOM/axe-core integration
 const runAccessibilityAnalysis = async (htmlContent, url) => {
     return new Promise((resolve, reject) => {
         let dom = null;
@@ -246,7 +243,7 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             // Aggressive garbage collection
             if (global.gc) {
                 global.gc();
-                setTimeout(() => global.gc(), 100); // Second GC after a delay
+                setTimeout(() => global.gc(), 100);
             }
         };
 
@@ -267,9 +264,9 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
 
             dom = new JSDOM(htmlContent, {
                 url: url,
-                runScripts: "outside-only", // Safer than dangerously
+                runScripts: "outside-only",
                 resources: "usable",
-                pretendToBeVisual: false, // Reduce resource usage
+                pretendToBeVisual: false,
                 virtualConsole: virtualConsole,
                 beforeParse(window) {
                     // Disable problematic APIs
@@ -277,7 +274,6 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                     window.confirm = () => false;
                     window.prompt = () => null;
                     window.open = () => null;
-                    // Disable timers to prevent infinite loops, and other resource-heavy features
                     window.setTimeout = () => 0;
                     window.setInterval = () => 0;
                     window.requestAnimationFrame = () => 0;
@@ -306,9 +302,6 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             }
 
             const isComplexSite = elementCount > CONFIG.COMPLEX_SITE_THRESHOLD;
-            // The actualTimeout was based on "NORMAL" or "HIGH" complexity in the original
-            // Claude's recommendation implicitly simplified it, using a fixed ANALYSIS_TIMEOUT.
-            // Let's stick with the CONFIG.ANALYSIS_TIMEOUT for simplicity as per Claude's merged file.
             const actualTimeout = CONFIG.ANALYSIS_TIMEOUT;
 
             console.log(`🏗️ Site complexity: ${isComplexSite ? 'HIGH' : 'NORMAL'} (timeout: ${actualTimeout/1000}s)`);
@@ -319,7 +312,7 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 reject(new Error(`Analysis timeout after ${actualTimeout / 1000} seconds - website too complex`));
             }, actualTimeout);
 
-            // Optimized axe configuration for complex sites (Claude's rules)
+            // FIXED: Configure axe-core properly for JSDOM environment
             const axeConfig = {
                 rules: [
                     { id: 'bypass', enabled: true },
@@ -333,72 +326,103 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             const axeOptions = {
                 runOnly: {
                     type: 'tag',
-                    values: ['wcag2a', 'wcag2aa'] // Re-enabled wcag2aa as it's common. If memory is tight, can revert to just wcag2a for complex sites.
+                    values: ['wcag2a', 'wcag2aa']
                 },
                 resultTypes: ['violations', 'incomplete'],
                 elementRef: false,
                 selectors: false,
                 ancestry: false,
                 xpath: false,
-                performanceTimer: true // Enable performance monitoring
+                performanceTimer: true
             };
 
+            // CRITICAL FIX: Set up global context for axe-core
+            // Store original globals
+            const originalWindow = global.window;
+            const originalDocument = global.document;
+            
+            try {
+                // Set JSDOM globals for axe-core
+                global.window = window;
+                global.document = document;
+                
+                // Also set them on the axe object if needed
+                if (axe.configure) {
+                    axe.configure(axeConfig);
+                }
 
-            // Execute axe analysis directly, removed polling as per Claude's suggestion
-            axe.run(document, axeOptions)
-                .then(function(results) {
-                    try {
-                        if (isCompleted) return; // Already cleaned up due to timeout
+                // Execute axe analysis with proper context
+                axe.run(document, axeOptions)
+                    .then(function(results) {
+                        try {
+                            if (isCompleted) return; // Already cleaned up due to timeout
 
-                        const analysisTime = Date.now() - (performance.timeOrigin + window.performance.now()); // Correct way to get analysis time in JSDOM context
-                        console.log('⏱️ Axe analysis took: ' + analysisTime + 'ms');
+                            console.log(`⏱️ Axe analysis completed successfully`);
 
-                        // Aggressive result limiting
-                        const maxViolations = CONFIG.MAX_VIOLATIONS_TO_PROCESS;
-                        const maxIncomplete = CONFIG.MAX_VIOLATIONS_TO_PROCESS / 2; // Half for incomplete
+                            // Aggressive result limiting
+                            const maxViolations = CONFIG.MAX_VIOLATIONS_TO_PROCESS;
+                            const maxIncomplete = CONFIG.MAX_VIOLATIONS_TO_PROCESS / 2;
 
-                        const limitedResults = {
-                            violations: (results.violations || []).slice(0, maxViolations),
-                            incomplete: (results.incomplete || []).slice(0, maxIncomplete),
-                            passes: (results.passes || []).length,
-                            url: url, // Use the passed URL for consistency
-                            timestamp: new Date().toISOString(),
-                            analysisTimeMs: analysisTime
-                        };
+                            const limitedResults = {
+                                violations: (results.violations || []).slice(0, maxViolations),
+                                incomplete: (results.incomplete || []).slice(0, maxIncomplete),
+                                passes: (results.passes || []).length,
+                                url: url,
+                                timestamp: new Date().toISOString(),
+                                analysisTimeMs: Date.now() - (analysisTimeout ? actualTimeout : 0)
+                            };
 
-                        // Clean up nodes data aggressively
-                        limitedResults.violations.forEach(violation => {
-                            if (violation.nodes) {
-                                violation.nodes = violation.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION).map(node => ({
-                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
-                                    failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
-                                }));
-                            }
-                        });
+                            // Clean up nodes data aggressively
+                            limitedResults.violations.forEach(violation => {
+                                if (violation.nodes) {
+                                    violation.nodes = violation.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION).map(node => ({
+                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
+                                        failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
+                                    }));
+                                }
+                            });
 
-                        limitedResults.incomplete.forEach(incomplete => {
-                            if (incomplete.nodes) {
-                                incomplete.nodes = incomplete.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION / 2).map(node => ({ // Limit incomplete nodes more
-                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
-                                }));
-                            }
-                        });
+                            limitedResults.incomplete.forEach(incomplete => {
+                                if (incomplete.nodes) {
+                                    incomplete.nodes = incomplete.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION / 2).map(node => ({
+                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
+                                    }));
+                                }
+                            });
 
+                            // Restore original globals
+                            global.window = originalWindow;
+                            global.document = originalDocument;
+
+                            cleanup();
+                            resolve(limitedResults);
+                        } catch (processingError) {
+                            console.error('Failed to process axe results:', processingError);
+                            // Restore original globals
+                            global.window = originalWindow;
+                            global.document = originalDocument;
+                            cleanup();
+                            reject(new Error('Failed to process results: ' + processingError.message));
+                        }
+                    })
+                    .catch(function(axeRunError) {
+                        console.error('Axe analysis failed:', axeRunError);
+                        // Restore original globals
+                        global.window = originalWindow;
+                        global.document = originalDocument;
                         cleanup();
-                        resolve(limitedResults);
-                    } catch (processingError) {
-                        console.error('Failed to process axe results:', processingError);
-                        cleanup();
-                        reject(new Error('Failed to process results: ' + processingError.message));
-                    }
-                })
-                .catch(function(axeRunError) {
-                    console.error('Axe analysis failed:', axeRunError);
-                    cleanup();
-                    reject(new Error('Analysis failed: ' + axeRunError.message));
-                });
+                        reject(new Error('Analysis failed: ' + axeRunError.message));
+                    });
+
+            } catch (setupError) {
+                // Restore original globals on setup error
+                global.window = originalWindow;
+                global.document = originalDocument;
+                cleanup();
+                reject(new Error('Failed to setup axe-core context: ' + setupError.message));
+            }
 
         } catch (error) {
             cleanup();
@@ -406,7 +430,6 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
         }
     });
 };
-
 
 // Enhanced error handling middleware
 const handleError = (error, req, res, next) => {
@@ -440,12 +463,11 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
         console.log(`💾 Memory after GC: ${afterGcMemory.toFixed(2)}MB`);
     }
 
-    // Check if we have enough memory to proceed (added by Claude)
-    if (initialMemory > 300) { // 300MB threshold
+    // Check if we have enough memory to proceed
+    if (initialMemory > 300) {
         console.warn(`⚠️ High initial memory usage: ${initialMemory.toFixed(2)}MB - may fail`);
 
         if (global.gc) {
-            // Aggressive cleanup before proceeding
             for (let i = 0; i < 3; i++) {
                 global.gc();
             }
@@ -463,14 +485,13 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
         }
     }
 
-
     let htmlContent;
     try {
         console.log('🌐 Fetching HTML content...');
 
         const response = await axios.get(url, {
             timeout: CONFIG.REQUEST_TIMEOUT,
-            maxRedirects: 1, // Reduced to 1 redirect
+            maxRedirects: 1,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (compatible; AccessibilityBot/1.0)',
                 'Accept': 'text/html,application/xhtml+xml',
@@ -489,7 +510,6 @@ app.post('/check-accessibility-static', validateUrl, async (req, res) => {
         htmlContent = sanitizeAndValidateHtml(response.data, url);
         console.log(`✅ HTML fetched and cleaned. Processing ${htmlContent.length} characters`);
 
-        // Memory check after HTML processing
         const afterCleanMemory = process.memoryUsage().heapUsed / 1024 / 1024;
         console.log(`💾 Memory after HTML cleanup: ${afterCleanMemory.toFixed(2)}MB`);
 
@@ -711,7 +731,7 @@ const gracefulShutdown = () => {
         process.exit(0);
     });
 
-    // Force shutdown after 20 seconds (reduced)
+    // Force shutdown after 20 seconds
     setTimeout(() => {
         console.log('❌ Forced shutdown');
         process.exit(1);
@@ -739,4 +759,4 @@ const server = app.listen(port, '0.0.0.0', () => {
 });
 
 // Increase server timeout
-server.timeout = CONFIG.REQUEST_TIMEOUT + 15000; // Add 15s buffer
+server.timeout = CONFIG.REQUEST_TIMEOUT + 15000;
