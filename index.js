@@ -1,11 +1,11 @@
-import express from 'express';
-import axios from 'axios';
-import { JSDOM, VirtualConsole } from 'jsdom';
-import axe from 'axe-core';
-import dotenv from 'dotenv';
-import http from 'node:http';
-import https from 'node:https';
-// import { promisify } from 'util'; // Not used in the provided update, keeping commented out
+const express = require('express');
+const axios = require('axios');
+const { JSDOM, VirtualConsole } = require('jsdom');
+const axe = require('axe-core');
+const dotenv = require('dotenv');
+const http = require('node:http');
+const https = require('node:https');
+// const { promisify } = require('util'); // If you were using it
 
 dotenv.config();
 
