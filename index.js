@@ -212,7 +212,6 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
     return cleanedHtml;
 };
 
-// FIXED: Properly configure axe-core for JSDOM environment
 const runAccessibilityAnalysis = async (htmlContent, url) => {
     return new Promise((resolve, reject) => {
         let dom = null;
@@ -250,13 +249,11 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
         try {
             console.log('🔍 Initializing JSDOM with strict security restrictions...');
 
-            // Create JSDOM with minimal resource usage and timeouts
             const virtualConsole = new VirtualConsole();
-            virtualConsole.on("error", () => {}); // Suppress all errors
-            virtualConsole.on("warn", () => {}); // Suppress all warnings
-            virtualConsole.on("jsdomError", () => {}); // Suppress JSDOM errors
+            virtualConsole.on("error", () => {});
+            virtualConsole.on("warn", () => {});
+            virtualConsole.on("jsdomError", () => {});
 
-            // Set JSDOM creation timeout
             jsdomTimeout = setTimeout(() => {
                 cleanup();
                 reject(new Error('JSDOM initialization timeout - site too complex'));
@@ -264,12 +261,11 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
 
             dom = new JSDOM(htmlContent, {
                 url: url,
-                runScripts: "outside-only",
+                runScripts: "dangerously", // Temporarily set to dangerously or at least outside-only for script evaluation. `JSDOM.prototype.window.eval` is often safer.
                 resources: "usable",
                 pretendToBeVisual: false,
                 virtualConsole: virtualConsole,
                 beforeParse(window) {
-                    // Disable problematic APIs
                     window.alert = () => {};
                     window.confirm = () => false;
                     window.prompt = () => null;
@@ -282,7 +278,6 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 }
             });
 
-            // Clear JSDOM timeout since creation succeeded
             if (jsdomTimeout) {
                 clearTimeout(jsdomTimeout);
                 jsdomTimeout = null;
@@ -291,7 +286,6 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             const { window } = dom;
             const { document } = window;
 
-            // Count DOM elements and check for complexity
             const elementCount = document.querySelectorAll('*').length;
             console.log(`📊 DOM elements found: ${elementCount}`);
 
@@ -306,124 +300,99 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
 
             console.log(`🏗️ Site complexity: ${isComplexSite ? 'HIGH' : 'NORMAL'} (timeout: ${actualTimeout/1000}s)`);
 
-            // Set analysis timeout
             analysisTimeout = setTimeout(() => {
                 cleanup();
                 reject(new Error(`Analysis timeout after ${actualTimeout / 1000} seconds - website too complex`));
             }, actualTimeout);
 
-            // CRITICAL FIX: Use axe-core's source method to inject it into the JSDOM environment
-            try {
-                console.log('🔧 Injecting axe-core into JSDOM environment...');
-                
-                // Get axe-core source code and inject it into the JSDOM window
-                const axeSource = axe.source;
-                
-                // Create and execute the axe-core script in the JSDOM context
-                const script = window.document.createElement('script');
-                script.textContent = axeSource;
-                window.document.head.appendChild(script);
+            // --- REMOVED AXE.SOURCE INJECTION ---
+            // The previous logic for injecting axe.source is problematic.
+            // Instead, we will directly use the 'axe' module imported at the top.
+            // ---
 
-                // Verify axe is available in the window
-                if (!window.axe) {
-                    cleanup();
-                    reject(new Error('Failed to inject axe-core into JSDOM environment'));
-                    return;
-                }
+            // Configure axe-core directly (no injection needed, it's already available in Node context)
+            const axeConfig = {
+                rules: [
+                    { id: 'bypass', enabled: true },
+                    { id: 'color-contrast', enabled: false },
+                    { id: 'focus-order-semantics', enabled: false },
+                    { id: 'scrollable-region-focusable', enabled: false },
+                    { id: 'css-orientation-lock', enabled: false }
+                ]
+            };
 
-                console.log('✅ axe-core successfully injected into JSDOM');
+            const axeOptions = {
+                runOnly: {
+                    type: 'tag',
+                    values: ['wcag2a', 'wcag2aa']
+                },
+                resultTypes: ['violations', 'incomplete'],
+                elementRef: false,
+                selectors: false,
+                ancestry: false,
+                xpath: false,
+                performanceTimer: true
+            };
 
-                // Configure axe-core within the JSDOM context
-                const axeConfig = {
-                    rules: [
-                        { id: 'bypass', enabled: true },
-                        { id: 'color-contrast', enabled: false }, // Disable expensive rules
-                        { id: 'focus-order-semantics', enabled: false },
-                        { id: 'scrollable-region-focusable', enabled: false },
-                        { id: 'css-orientation-lock', enabled: false }
-                    ]
-                };
+            // Use axe.configure against the global axe object if needed,
+            // or pass it in run options, but axe-core works by directly running against the JSDOM document.
+            // We configure it via options passed to axe.run.
 
-                const axeOptions = {
-                    runOnly: {
-                        type: 'tag',
-                        values: ['wcag2a', 'wcag2aa']
-                    },
-                    resultTypes: ['violations', 'incomplete'],
-                    elementRef: false,
-                    selectors: false,
-                    ancestry: false,
-                    xpath: false,
-                    performanceTimer: true
-                };
+            console.log('🚀 Running axe analysis using axe.run(document, options)...');
 
-                // Configure axe within the JSDOM window
-                if (window.axe.configure) {
-                    window.axe.configure(axeConfig);
-                }
+            // Directly run axe analysis on the JSDOM document
+            axe.run(document, axeOptions) // <-- This is the key change
+                .then(function(results) {
+                    try {
+                        if (isCompleted) return;
 
-                console.log('🚀 Running axe analysis within JSDOM context...');
+                        const analysisTime = Date.now() - (performance.timeOrigin + window.performance.now());
+                        console.log(`⏱️ Axe analysis completed successfully`);
 
-                // Run axe analysis using the injected axe instance
-                window.axe.run(document, axeOptions)
-                    .then(function(results) {
-                        try {
-                            if (isCompleted) return; // Already cleaned up due to timeout
+                        const maxViolations = CONFIG.MAX_VIOLATIONS_TO_PROCESS;
+                        const maxIncomplete = CONFIG.MAX_VIOLATIONS_TO_PROCESS / 2;
 
-                            console.log(`⏱️ Axe analysis completed successfully`);
+                        const limitedResults = {
+                            violations: (results.violations || []).slice(0, maxViolations),
+                            incomplete: (results.incomplete || []).slice(0, maxIncomplete),
+                            passes: (results.passes || []).length,
+                            url: url,
+                            timestamp: new Date().toISOString(),
+                            analysisTimeMs: analysisTime
+                        };
 
-                            // Aggressive result limiting
-                            const maxViolations = CONFIG.MAX_VIOLATIONS_TO_PROCESS;
-                            const maxIncomplete = CONFIG.MAX_VIOLATIONS_TO_PROCESS / 2;
+                        limitedResults.violations.forEach(violation => {
+                            if (violation.nodes) {
+                                violation.nodes = violation.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION).map(node => ({
+                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
+                                    failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
+                                }));
+                            }
+                        });
 
-                            const limitedResults = {
-                                violations: (results.violations || []).slice(0, maxViolations),
-                                incomplete: (results.incomplete || []).slice(0, maxIncomplete),
-                                passes: (results.passes || []).length,
-                                url: url,
-                                timestamp: new Date().toISOString(),
-                                analysisTimeMs: Date.now() - (analysisTimeout ? actualTimeout : 0)
-                            };
+                        limitedResults.incomplete.forEach(incomplete => {
+                            if (incomplete.nodes) {
+                                incomplete.nodes = incomplete.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION / 2).map(node => ({
+                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
+                                }));
+                            }
+                        });
 
-                            // Clean up nodes data aggressively
-                            limitedResults.violations.forEach(violation => {
-                                if (violation.nodes) {
-                                    violation.nodes = violation.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION).map(node => ({
-                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
-                                        failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
-                                    }));
-                                }
-                            });
-
-                            limitedResults.incomplete.forEach(incomplete => {
-                                if (incomplete.nodes) {
-                                    incomplete.nodes = incomplete.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION / 2).map(node => ({
-                                        html: node.html ? node.html.substring(0, 100) + '...' : '',
-                                        target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
-                                    }));
-                                }
-                            });
-
-                            cleanup();
-                            resolve(limitedResults);
-                        } catch (processingError) {
-                            console.error('Failed to process axe results:', processingError);
-                            cleanup();
-                            reject(new Error('Failed to process results: ' + processingError.message));
-                        }
-                    })
-                    .catch(function(axeRunError) {
-                        console.error('Axe analysis failed:', axeRunError);
                         cleanup();
-                        reject(new Error('Analysis failed: ' + axeRunError.message));
-                    });
-
-            } catch (injectionError) {
-                console.error('Failed to inject axe-core:', injectionError);
-                cleanup();
-                reject(new Error('Failed to inject axe-core into JSDOM: ' + injectionError.message));
-            }
+                        resolve(limitedResults);
+                    } catch (processingError) {
+                        console.error('Failed to process axe results:', processingError);
+                        cleanup();
+                        reject(new Error('Failed to process results: ' + processingError.message));
+                    }
+                })
+                .catch(function(axeRunError) {
+                    console.error('Axe analysis failed:', axeRunError);
+                    cleanup();
+                    reject(new Error('Analysis failed: ' + axeRunError.message));
+                });
 
         } catch (error) {
             cleanup();
