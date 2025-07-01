@@ -212,7 +212,7 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
     return cleanedHtml;
 };
 
-// FIXED: Completely rewritten accessibility analysis with proper JSDOM/axe-core integration
+// FIXED: Properly configure axe-core for JSDOM environment
 const runAccessibilityAnalysis = async (htmlContent, url) => {
     return new Promise((resolve, reject) => {
         let dom = null;
@@ -312,47 +312,60 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 reject(new Error(`Analysis timeout after ${actualTimeout / 1000} seconds - website too complex`));
             }, actualTimeout);
 
-            // FIXED: Configure axe-core properly for JSDOM environment
-            const axeConfig = {
-                rules: [
-                    { id: 'bypass', enabled: true },
-                    { id: 'color-contrast', enabled: false }, // Disable expensive rules
-                    { id: 'focus-order-semantics', enabled: false },
-                    { id: 'scrollable-region-focusable', enabled: false },
-                    { id: 'css-orientation-lock', enabled: false }
-                ]
-            };
-
-            const axeOptions = {
-                runOnly: {
-                    type: 'tag',
-                    values: ['wcag2a', 'wcag2aa']
-                },
-                resultTypes: ['violations', 'incomplete'],
-                elementRef: false,
-                selectors: false,
-                ancestry: false,
-                xpath: false,
-                performanceTimer: true
-            };
-
-            // CRITICAL FIX: Set up global context for axe-core
-            // Store original globals
-            const originalWindow = global.window;
-            const originalDocument = global.document;
-            
+            // CRITICAL FIX: Use axe-core's source method to inject it into the JSDOM environment
             try {
-                // Set JSDOM globals for axe-core
-                global.window = window;
-                global.document = document;
+                console.log('🔧 Injecting axe-core into JSDOM environment...');
                 
-                // Also set them on the axe object if needed
-                if (axe.configure) {
-                    axe.configure(axeConfig);
+                // Get axe-core source code and inject it into the JSDOM window
+                const axeSource = axe.source;
+                
+                // Create and execute the axe-core script in the JSDOM context
+                const script = window.document.createElement('script');
+                script.textContent = axeSource;
+                window.document.head.appendChild(script);
+
+                // Verify axe is available in the window
+                if (!window.axe) {
+                    cleanup();
+                    reject(new Error('Failed to inject axe-core into JSDOM environment'));
+                    return;
                 }
 
-                // Execute axe analysis with proper context
-                axe.run(document, axeOptions)
+                console.log('✅ axe-core successfully injected into JSDOM');
+
+                // Configure axe-core within the JSDOM context
+                const axeConfig = {
+                    rules: [
+                        { id: 'bypass', enabled: true },
+                        { id: 'color-contrast', enabled: false }, // Disable expensive rules
+                        { id: 'focus-order-semantics', enabled: false },
+                        { id: 'scrollable-region-focusable', enabled: false },
+                        { id: 'css-orientation-lock', enabled: false }
+                    ]
+                };
+
+                const axeOptions = {
+                    runOnly: {
+                        type: 'tag',
+                        values: ['wcag2a', 'wcag2aa']
+                    },
+                    resultTypes: ['violations', 'incomplete'],
+                    elementRef: false,
+                    selectors: false,
+                    ancestry: false,
+                    xpath: false,
+                    performanceTimer: true
+                };
+
+                // Configure axe within the JSDOM window
+                if (window.axe.configure) {
+                    window.axe.configure(axeConfig);
+                }
+
+                console.log('🚀 Running axe analysis within JSDOM context...');
+
+                // Run axe analysis using the injected axe instance
+                window.axe.run(document, axeOptions)
                     .then(function(results) {
                         try {
                             if (isCompleted) return; // Already cleaned up due to timeout
@@ -392,36 +405,24 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                                 }
                             });
 
-                            // Restore original globals
-                            global.window = originalWindow;
-                            global.document = originalDocument;
-
                             cleanup();
                             resolve(limitedResults);
                         } catch (processingError) {
                             console.error('Failed to process axe results:', processingError);
-                            // Restore original globals
-                            global.window = originalWindow;
-                            global.document = originalDocument;
                             cleanup();
                             reject(new Error('Failed to process results: ' + processingError.message));
                         }
                     })
                     .catch(function(axeRunError) {
                         console.error('Axe analysis failed:', axeRunError);
-                        // Restore original globals
-                        global.window = originalWindow;
-                        global.document = originalDocument;
                         cleanup();
                         reject(new Error('Analysis failed: ' + axeRunError.message));
                     });
 
-            } catch (setupError) {
-                // Restore original globals on setup error
-                global.window = originalWindow;
-                global.document = originalDocument;
+            } catch (injectionError) {
+                console.error('Failed to inject axe-core:', injectionError);
                 cleanup();
-                reject(new Error('Failed to setup axe-core context: ' + setupError.message));
+                reject(new Error('Failed to inject axe-core into JSDOM: ' + injectionError.message));
             }
 
         } catch (error) {
