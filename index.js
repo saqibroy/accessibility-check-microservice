@@ -170,6 +170,7 @@ const sendErrorResponse = (res, status, message, error, details = null, url = nu
 };
 
 // Enhanced HTML sanitizer for memory efficiency (corrected to use the optimized version once)
+// Enhanced HTML sanitizer for memory efficiency (corrected version)
 const sanitizeAndValidateHtml = (htmlContent, url) => {
     if (!htmlContent || typeof htmlContent !== 'string') {
         throw new Error('No valid HTML content received');
@@ -188,7 +189,7 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
         return truncatedHtml + '</main></body></html>';
     }
 
-    // Aggressive cleaning for memory efficiency (applying Claude's aggressive cleaning logic)
+    // Aggressive cleaning for memory efficiency (fixed regex pattern)
     let cleanedHtml = htmlContent;
     console.log('🧹 Cleaning HTML for memory efficiency...');
     cleanedHtml = cleanedHtml
@@ -203,7 +204,7 @@ const sanitizeAndValidateHtml = (htmlContent, url) => {
         .replace(/<video[^>]*>[\s\S]*?<\/video>/gi, '') // Remove videos
         .replace(/<audio[^>]*>[\s\S]*?<\/audio>/gi, '') // Remove audio
         .replace(/<canvas[^>]*>[\s\S]*?<\/canvas>/gi, '') // Remove canvas
-        .replace(//g, '') // Remove comments
+        .replace(/<!--[\s\S]*?-->/g, '') // Remove comments (FIXED REGEX)
         .replace(/<meta[^>]*>/gi, '') // Remove meta tags (keep only essential ones)
         .replace(/<link[^>]*(?!rel=['"]?icon['"]?)[^>]*>/gi, ''); // Remove non-icon links
 
