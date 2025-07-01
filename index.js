@@ -261,25 +261,31 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
 
             dom = new JSDOM(htmlContent, {
                 url: url,
-                // Change runScripts to "dangerously" if "outside-only" still causes issues for axe-core's internal script execution.
-                // "dangerously" is needed for axe-core to function as it expects scripts to run.
-                // We're disabling external scripts via beforeParse, so this is about its internal operation.
-                runScripts: "dangerously", // This is crucial for axe-core to set up its environment
+                runScripts: "dangerously", // THIS IS CRUCIAL: Must be "dangerously" for axe-core to function internally
                 resources: "usable",
                 pretendToBeVisual: false,
                 virtualConsole: virtualConsole,
                 beforeParse(window) {
+                    // Disable problematic APIs in the JSDOM window
                     window.alert = () => {};
                     window.confirm = () => false;
                     window.prompt = () => null;
                     window.open = () => null;
-                    window.setTimeout = () => 0;
-                    window.setInterval = () => 0;
+                    window.setTimeout = () => 0; // Disable real timers
+                    window.setInterval = () => 0; // Disable real intervals
                     window.requestAnimationFrame = () => 0;
                     window.fetch = () => Promise.reject(new Error('fetch is disabled'));
                     window.XMLHttpRequest = class { constructor() { throw new Error('XMLHttpRequest is disabled'); } };
-                    // IMPORTANT: You might need to set window.Node for axe to work correctly in JSDOM:
-                    // window.Node = global.Node; // Ensure Node is available if axe needs it globally
+
+                    // IMPORTANT: Pass Node.js globals that axe-core might expect in the JSDOM context
+                    // This can sometimes be necessary for older versions or specific setups of axe-core
+                    // though for newer versions with `dangerously` it's often not explicitly needed.
+                    // If you encounter "ReferenceError: Node is not defined" later, uncomment these:
+                    // window.Node = global.Node;
+                    // window.Element = global.Element;
+                    // window.HTMLElement = global.HTMLElement;
+                    // window.HTMLHeadElement = global.HTMLHeadElement;
+                    // window.HTMLBodyElement = global.HTMLBodyElement;
                 }
             });
 
@@ -311,7 +317,7 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
             }, actualTimeout);
 
 
-            // Configure axe-core directly against the JSDOM window
+            // Configure axe-core rules (these are passed directly to axe.run)
             const axeConfig = {
                 rules: [
                     { id: 'bypass', enabled: true },
@@ -332,77 +338,69 @@ const runAccessibilityAnalysis = async (htmlContent, url) => {
                 selectors: false,
                 ancestry: false,
                 xpath: false,
-                performanceTimer: true
+                performanceTimer: true,
+                // Add the configured rules here, or configure globally if axe supports it this way
+                rules: axeConfig.rules // Apply the specific rules defined above
             };
 
-            // CRITICAL FIX: Pass the JSDOM window object to axe.run()
-            console.log('🚀 Running axe analysis using axe.run(window.document, options) from JSDOM instance...');
+            // CRITICAL FIX: Directly run axe analysis on the JSDOM document object.
+            // When axe-core is imported/required in Node.js, its `run` method
+            // can directly take a JSDOM document or window as context.
+            console.log('🚀 Running axe analysis using axe.run(document, axeOptions)...');
 
-            // The 'axe' module needs to be initialized with the JSDOM window context.
-            // This is typically done with `axe.configure` or by binding axe to the window.
-            // The simplest is to ensure `axe` is available in the JSDOM window.
-            // However, the standard Node.js integration for axe-core with JSDOM is to pass the document or window directly.
+            axe.run(document, axeOptions) // <-- This is the most direct and standard way
+                .then(function(results) {
+                    try {
+                        if (isCompleted) return; // Cleanup already initiated by timeout
 
-            // Let's re-try the simpler method based on axe-core's documentation:
-            // axe.run() expects a context (element or document) and then options.
-            // If it's a global axe, it would pick up window.document.
-            // Since we're in Node, we explicitly provide the JSDOM's document.
+                        const analysisTime = Date.now() - (performance.timeOrigin + window.performance.now()); // Correct way to get analysis time in JSDOM context
+                        console.log(`⏱️ Axe analysis completed successfully`);
 
-            // One common issue is that axe-core itself needs `Node` or other globals to be available
-            // on the JSDOM window. Let's ensure that and explicitly bind axe to the window for it to work.
+                        // Aggressive result limiting
+                        const maxViolations = CONFIG.MAX_VIOLATIONS_TO_PROCESS;
+                        const maxIncomplete = CONFIG.MAX_VIOLATIONS_TO_PROCESS / 2;
 
-            // The most robust way with axe-core in JSDOM is often:
-            axe.Source.inject(window.document); // Inject axe source into the JSDOM window's document. This is different from axe.source!
+                        const limitedResults = {
+                            violations: (results.violations || []).slice(0, maxViolations),
+                            incomplete: (results.incomplete || []).slice(0, maxIncomplete),
+                            passes: (results.passes || []).length,
+                            url: url,
+                            timestamp: new Date().toISOString(),
+                            analysisTimeMs: analysisTime
+                        };
 
-            // Now, configure and run axe within that JSDOM context.
-            // This might require a small `eval` or a direct call *after* injection.
-            window.eval(`
-                if (window.axe) {
-                    window.axe.configure(${JSON.stringify(axeConfig)});
-                    window.axe.run(window.document, ${JSON.stringify(axeOptions)})
-                        .then(results => {
-                            window._axeResults = results; // Store results for Node.js to retrieve
-                        })
-                        .catch(err => {
-                            window._axeError = err.message; // Store error
+                        limitedResults.violations.forEach(violation => {
+                            if (violation.nodes) {
+                                violation.nodes = violation.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION).map(node => ({
+                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target,
+                                    failureSummary: node.failureSummary ? node.failureSummary.substring(0, 150) + '...' : ''
+                                }));
+                            }
                         });
-                } else {
-                    window._axeError = 'axe-core not found in JSDOM window after injection.';
-                }
-            `);
 
-            // Now, poll for the results from the JSDOM window, similar to your original design's polling
-            let pollAttempts = 0;
-            const maxPollAttempts = actualTimeout / 100; // Poll every 100ms up to timeout
-            const pollInterval = 100;
+                        limitedResults.incomplete.forEach(incomplete => {
+                            if (incomplete.nodes) {
+                                incomplete.nodes = incomplete.nodes.slice(0, CONFIG.MAX_NODES_PER_VIOLATION / 2).map(node => ({
+                                    html: node.html ? node.html.substring(0, 100) + '...' : '',
+                                    target: Array.isArray(node.target) ? node.target.slice(0, 2) : node.target
+                                }));
+                            }
+                        });
 
-            const checkResults = () => {
-                if (isCompleted) return;
-
-                pollAttempts++;
-
-                if (window._axeResults) {
+                        cleanup();
+                        resolve(limitedResults);
+                    } catch (processingError) {
+                        console.error('Failed to process axe results:', processingError);
+                        cleanup();
+                        reject(new Error('Failed to process results: ' + processingError.message));
+                    }
+                })
+                .catch(function(axeRunError) {
+                    console.error('Axe analysis failed:', axeRunError);
                     cleanup();
-                    resolve(window._axeResults);
-                    return;
-                }
-
-                if (window._axeError) {
-                    cleanup();
-                    reject(new Error(window._axeError));
-                    return;
-                }
-
-                if (pollAttempts >= maxPollAttempts) {
-                    cleanup();
-                    reject(new Error('Analysis polling timeout: axe.run did not complete in JSDOM context.'));
-                    return;
-                }
-
-                setTimeout(checkResults, pollInterval);
-            };
-            setTimeout(checkResults, pollInterval);
-
+                    reject(new Error('Analysis failed: ' + axeRunError.message));
+                });
 
         } catch (error) {
             cleanup();
